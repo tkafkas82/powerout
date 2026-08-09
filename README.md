@@ -101,8 +101,12 @@ with an `error` field instead of sinking the whole response.
 A phone can only subscribe from a secure origin, so `http://<laptop-ip>:4950`
 won't do — it needs HTTPS.
 
-1. **Import the repo** in Vercel (framework: Other; it serves `public/` and the
-   `api/` functions, per `vercel.json`).
+1. **Import the repo** in Vercel. `vercel.json` pins `framework: null` and serves
+   `public/` plus the `api/` functions — nothing is built. Express is deliberately
+   a **devDependency**: listed under `dependencies` it makes Vercel auto-detect the
+   repo as an Express app and fail the build hunting for a server entrypoint
+   (`No entrypoint found which imports express`). Only `server.js` uses it, and
+   `server.js` never runs on Vercel.
 2. Attach an **Upstash Redis** integration. `lib/store.js` picks up either
    `UPSTASH_REDIS_REST_URL`/`TOKEN` or `KV_REST_API_URL`/`TOKEN` automatically and
    switches off the file backend — Vercel's filesystem is ephemeral and

@@ -17,6 +17,7 @@ import * as h from './lib/handlers.js';
 import { HttpError } from './lib/handlers.js';
 import { backend } from './lib/store.js';
 import { getVapid } from './lib/push.js';
+import { googleClientId } from './lib/auth.js';
 import { runCycle } from './lib/cycle.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -63,6 +64,12 @@ app.listen(PORT, async () => {
   } catch (err) {
     console.log(`Push: disabled — ${err.message}`);
   }
+
+  // Sign-in hides itself when unconfigured, which is right for a visitor and
+  // baffling for whoever is setting it up — so say so here.
+  console.log(googleClientId()
+    ? `Sign-in: ready (client ${googleClientId().slice(0, 12)}…)`
+    : 'Sign-in: disabled — set GOOGLE_CLIENT_ID in .env to show the Google button');
 
   // The scheduler is what makes push real: it keeps checking DEDDIE whether or
   // not anyone has the page open. Kick off shortly after boot, then every

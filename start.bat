@@ -11,4 +11,4 @@ if not exist .env (
 )
 echo Starting Power Outages on http://localhost:4950 ...
 start "" http://localhost:4950
-node --env-file-if-exists=.env server.js
+node --env-file-if-exists=.env --env-file-if-exists=.env.local server.js

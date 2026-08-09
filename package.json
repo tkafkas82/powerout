@@ -5,10 +5,10 @@
   "type": "module",
   "main": "server.js",
   "scripts": {
-    "start": "node --env-file-if-exists=.env server.js",
+    "start": "node --env-file-if-exists=.env --env-file-if-exists=.env.local server.js",
     "test": "node --test test/auth.test.js test/cycle.test.js",
-    "cycle": "node --env-file-if-exists=.env -e \"import('./lib/cycle.js').then(m=>m.runCycle({ttl:0})).then(r=>console.log(r))\"",
-    "vapid": "node --env-file-if-exists=.env -e \"import('./lib/push.js').then(m=>m.getVapid()).then(k=>console.log(k))\""
+    "cycle": "node --env-file-if-exists=.env --env-file-if-exists=.env.local -e \"import('./lib/cycle.js').then(m=>m.runCycle({ttl:0})).then(r=>console.log(r))\"",
+    "vapid": "node --env-file-if-exists=.env --env-file-if-exists=.env.local -e \"import('./lib/push.js').then(m=>m.getVapid()).then(k=>console.log(k))\""
   },
   "dependencies": {
     "web-push": "^3.6.7"

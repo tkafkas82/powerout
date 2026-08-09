@@ -134,8 +134,9 @@ lib/store.js       subscriptions + snapshots: Upstash Redis or a JSON file
 lib/push.js        web-push transport, VAPID keys, prune-on-410
 lib/cycle.js       poll -> diff -> per-device events -> push
 lib/handlers.js    framework-free request handlers
+lib/vercel.js      Vercel adapter (kept out of api/, which holds only functions)
 server.js          Express adapter + the local scheduler
-api/*.js           Vercel adapters over the same handlers
+api/*.js           one file per endpoint, each a 3-line wrapper
 public/            the PWA (index.html, app.js, styles.css, sw.js, icons)
 test/cycle.test.js end-to-end: real encryption + VAPID, stand-in push service
 ```

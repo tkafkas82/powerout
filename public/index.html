@@ -25,6 +25,22 @@
     <button id="refresh" class="icon-btn" title="Ανανέωση" aria-label="Ανανέωση">⟳</button>
   </header>
 
+  <!-- Hidden entirely unless the server reports a Google client id. -->
+  <section id="account" class="account" hidden>
+    <div id="signedOut" hidden>
+      <p class="account-copy">Σύνδεση για να αποθηκεύονται οι περιοχές σου και να τις βλέπεις σε κάθε συσκευή.</p>
+      <div id="googleButton"></div>
+    </div>
+    <div id="signedIn" class="account-user" hidden>
+      <img id="userPic" alt="" width="32" height="32" hidden>
+      <div class="account-who">
+        <b id="userName"></b>
+        <small id="userEmail"></small>
+      </div>
+      <button id="signOut" class="btn ghost small">Αποσύνδεση</button>
+    </div>
+  </section>
+
   <p id="status" class="status" role="status"></p>
 
   <section class="card">

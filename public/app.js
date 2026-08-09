@@ -23,9 +23,13 @@ const CACHE = 'power-outages-v2';   // must match sw.js
 const $ = id => document.getElementById(id);
 const el = { add:$('add'), areas:$('areas'), results:$('results'), status:$('status'),
              refresh:$('refresh'), filter:$('filter'), upcomingOnly:$('upcomingOnly'),
-             lead:$('lead'), notify:$('notify'), testPush:$('testPush'), pushHint:$('pushHint') };
+             lead:$('lead'), notify:$('notify'), testPush:$('testPush'), pushHint:$('pushHint'),
+             account:$('account'), signedIn:$('signedIn'), signedOut:$('signedOut'),
+             googleButton:$('googleButton'), userName:$('userName'), userEmail:$('userEmail'),
+             userPic:$('userPic'), signOut:$('signOut') };
 
 let areas = load(LS.areas, []);
+let user = null;            // { sub, email, name, picture } once signed in
 let outages = [];          // deduped, merged across areas
 let expanded = new Set();
 let lastFetch = 0;
@@ -260,6 +264,15 @@ function renderAreas() {
     </span>`).join('');
 }
 
+// localStorage stays the source of truth for an anonymous visitor and the
+// offline copy for a signed-in one; the server copy is what follows the account.
+function persistAreas() {
+  save(LS.areas, areas);
+  renderAreas();
+  savePrefs();
+  syncPush();
+}
+
 function addArea() {
   const pref = prefectureCombo.selected;
   if (!pref) return;
@@ -271,17 +284,13 @@ function addArea() {
     key, prefectureId: pref.id, municipalityId: mun ? mun.id : null,
     prefectureName: pref.name, municipalityName: mun ? mun.name : null
   });
-  save(LS.areas, areas);
-  renderAreas();
-  syncPush();
+  persistAreas();
   refresh();
 }
 
 function removeArea(key) {
   areas = areas.filter(a => a.key !== key);
-  save(LS.areas, areas);
-  renderAreas();
-  syncPush();
+  persistAreas();
   if (areas.length) refresh(); else { outages = []; render(); }
 }
 
@@ -545,7 +554,117 @@ async function sendTestPush() {
   }
 }
 
+/* ---------------------------------------------------------------------------
+ * Google sign-in
+ *
+ * Optional: /api/config reports no client id when the server isn't set up, and
+ * the whole section stays hidden — the app then behaves exactly as it did with
+ * preferences in localStorage only.
+ * ------------------------------------------------------------------------- */
+function showUser() {
+  el.account.hidden = false;
+  el.signedIn.hidden = !user;
+  el.signedOut.hidden = Boolean(user);
+  if (!user) return;
+  el.userName.textContent = user.name || 'Συνδεδεμένος';
+  el.userEmail.textContent = user.email || '';
+  if (user.picture) { el.userPic.src = user.picture; el.userPic.hidden = false; }
+  else el.userPic.hidden = true;
+}
+
+/*
+ * Reconcile the account's stored areas with whatever this browser had.
+ *
+ * An account that already has areas wins — that's the point of signing in on a
+ * second device. A first-ever login has nothing stored, so this browser's areas
+ * are adopted and uploaded instead of being wiped.
+ */
+async function adoptPrefs(prefs) {
+  const saved = prefs?.areas || [];
+  if (saved.length) {
+    areas = saved;
+    save(LS.areas, areas);
+    if (prefs.leadHours) { el.lead.value = String(prefs.leadHours); save(LS.lead, el.lead.value); }
+    renderAreas();
+    refresh();
+  } else if (areas.length) {
+    await savePrefs();
+  }
+  syncPush();   // re-register the device against the account
+}
+
+async function savePrefs() {
+  if (!user) return;
+  try {
+    await postJson('/api/prefs', { areas, leadHours: Number(el.lead.value) || 24 });
+  } catch (err) {
+    setStatus(`Οι περιοχές δεν αποθηκεύτηκαν στον λογαριασμό: ${err.message}`, true);
+  }
+}
+
+async function onGoogleCredential(response) {
+  try {
+    const { user: signedIn, prefs } = await postJson('/api/login', { credential: response.credential });
+    user = signedIn;
+    showUser();
+    await adoptPrefs(prefs);
+    setStatus(`Συνδέθηκες ως ${user.email || user.name}.`);
+  } catch (err) {
+    setStatus(`Η σύνδεση απέτυχε: ${err.message}`, true);
+  }
+}
+
+async function signOut() {
+  try { await postJson('/api/logout', {}); } catch { /* the cookie expires anyway */ }
+  user = null;
+  showUser();
+  window.google?.accounts?.id?.disableAutoSelect();
+  setStatus('Αποσυνδέθηκες. Οι περιοχές μένουν αποθηκευμένες σε αυτή τη συσκευή.');
+}
+
+function renderGoogleButton(clientId) {
+  window.google.accounts.id.initialize({
+    client_id: clientId,
+    callback: onGoogleCredential,
+    auto_select: false,
+    cancel_on_tap_outside: true
+  });
+  window.google.accounts.id.renderButton(el.googleButton, {
+    theme: 'filled_black', size: 'large', shape: 'pill',
+    text: 'signin_with', locale: 'el', width: 260
+  });
+}
+
+const loadScript = src => new Promise((resolve, reject) => {
+  const tag = document.createElement('script');
+  tag.src = src; tag.async = true; tag.defer = true;
+  tag.onload = resolve; tag.onerror = () => reject(new Error('script blocked'));
+  document.head.appendChild(tag);
+});
+
+async function initAuth() {
+  let cfg;
+  try { cfg = await api('/api/config'); } catch { return; }
+  if (!cfg.googleClientId) return;      // not configured: stay on localStorage
+
+  user = cfg.user || null;
+  showUser();
+  if (user) await adoptPrefs(cfg.prefs);
+
+  if (!user) {
+    try {
+      await loadScript('https://accounts.google.com/gsi/client');
+      renderGoogleButton(cfg.googleClientId);
+    } catch {
+      el.signedOut.innerHTML =
+        '<p class="account-copy">Η σύνδεση Google δεν φορτώθηκε (αποκλεισμένο script;). ' +
+        'Οι περιοχές αποθηκεύονται μόνο σε αυτή τη συσκευή.</p>';
+    }
+  }
+}
+
 // ---- wiring ------------------------------------------------------------------
+el.signOut.addEventListener('click', signOut);
 el.add.addEventListener('click', addArea);
 el.areas.addEventListener('click', e => {
   const key = e.target.dataset.key;
@@ -560,7 +679,7 @@ el.results.addEventListener('click', e => {
 el.refresh.addEventListener('click', () => refresh());
 el.filter.addEventListener('input', () => { save(LS.filter, el.filter.value); render(); });
 el.upcomingOnly.addEventListener('change', () => { save(LS.upcoming, el.upcomingOnly.checked); render(); });
-el.lead.addEventListener('change', () => { save(LS.lead, el.lead.value); syncPush(); });
+el.lead.addEventListener('change', () => { save(LS.lead, el.lead.value); savePrefs(); syncPush(); });
 el.notify.addEventListener('click', () => (load(LS.push, false) ? disablePush() : enablePush()));
 el.testPush.addEventListener('click', sendTestPush);
 
@@ -577,6 +696,7 @@ el.lead.value = load(LS.lead, '24');
 renderAreas();
 render();
 loadPrefectures();
+initAuth();
 if (areas.length) refresh();
 
 if ('serviceWorker' in navigator) {

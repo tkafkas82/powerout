@@ -29,13 +29,18 @@ app.use(express.json({ limit: '64kb' }));
 // Adapt a lib/handlers function to Express.
 const route = handler => async (req, res) => {
   try {
-    const { status, json } = await handler({ query: req.query, body: req.body, headers: req.headers });
+    const { status, json, cookies } = await handler({ query: req.query, body: req.body, headers: req.headers });
+    if (cookies?.length) res.append('Set-Cookie', cookies);
     res.set('Cache-Control', 'no-store').status(status).json(json);
   } catch (err) {
     res.status(err instanceof HttpError ? err.status : 502).json({ error: err.message });
   }
 };
 
+app.get('/api/config', route(h.config));
+app.post('/api/login', route(h.login));
+app.post('/api/logout', route(h.logout));
+app.post('/api/prefs', route(h.savePrefs));
 app.get('/api/prefectures', route(h.prefectures));
 app.get('/api/municipalities', route(h.municipalities));
 app.get('/api/outages', route(h.outages));

@@ -78,12 +78,70 @@ Rules the cycle follows, all covered by `npm test`:
 - Each subscription carries its **own** areas and lead time; `sent` state lives on
   the subscription record, not globally.
 
+## Signing in with Google (optional)
+
+Without it, watched areas live in `localStorage` — per browser, lost when you
+clear site data. Sign in and they're stored against the Google account instead,
+so the phone and the laptop share one set.
+
+It's entirely optional: with no `GOOGLE_CLIENT_ID` the server reports no client
+id, the client hides the whole account section, and everything works as before.
+
+**Create the OAuth client**
+
+1. [Google Cloud console](https://console.cloud.google.com/) → create (or pick) a project.
+2. **APIs & Services → OAuth consent screen** → External → fill in app name and
+   your email. While the app is in *Testing*, add yourself under **Test users**;
+   nobody else can sign in until you publish.
+3. **APIs & Services → Credentials → Create credentials → OAuth client ID** →
+   *Web application*.
+4. Under **Authorised JavaScript origins**, add every origin the page is served
+   from — no paths, no trailing slash:
+   - `http://localhost:4950`
+   - `https://<your-deployment>.vercel.app`
+
+   No redirect URI is needed: this uses the ID-token flow, not a redirect.
+5. Copy the **Client ID** (it ends in `.apps.googleusercontent.com`).
+
+**Configure the server**
+
+```
+GOOGLE_CLIENT_ID=<client id>     # locally: set it before `npm start`
+```
+
+On Vercel add it as an environment variable and redeploy. There is **no client
+secret** anywhere — the browser gets a signed ID token, the server verifies it
+against Google's public keys (`lib/auth.js`) and mints its own HttpOnly session
+cookie. The audience check is what ties a token to this project; a token minted
+for some other app is rejected.
+
+Sessions are signed with `SESSION_SECRET` if set, otherwise derived from
+`VAPID_PRIVATE_KEY` so a deployment needs no extra variable. Locally a secret is
+generated into `data/session.json`.
+
+**What gets stored:** under `po:user:<google-sub>`, the watched areas (ids plus
+display names, so a second device can render the chips without refetching every
+list), the lead time, and the account's email and name. Nothing else.
+
+**Which copy wins:** an account that already has areas overrides what the browser
+had — that's the point of signing in on a second device. A first-ever login has
+nothing stored, so the browser's current areas are uploaded rather than wiped.
+Signing out leaves the local copy alone.
+
+Push subscriptions made while signed in record the account, and the cycle then
+reads that account's *current* areas rather than the snapshot the device
+uploaded — so changing areas on the phone moves the laptop's alerts too.
+
 ## API
 
 Same handlers serve the local Express app and the Vercel functions (`lib/handlers.js`).
 
 | Endpoint | Notes |
 |---|---|
+| `GET /api/config` | `{ googleClientId, user, prefs }` — one boot round trip |
+| `POST /api/login` | `{ credential }` from Google Identity Services; sets the session cookie |
+| `POST /api/logout` | clears the cookie |
+| `POST /api/prefs` | `{ areas, leadHours }` for the signed-in account; `401` otherwise |
 | `GET /api/prefectures` | `[{ id, name }]`, cached 12h |
 | `GET /api/municipalities?prefecture=24` | `[{ id, name }]`, cached 12h |
 | `GET /api/outages?areas=24:495,10` | comma-separated `prefectureID[:municipalityID]`; cached 10 min per area |
@@ -119,6 +177,7 @@ won't do — it needs HTTPS.
    | `VAPID_PRIVATE_KEY` | *secret* |
    | `VAPID_CONTACT` | `mailto:you@example.com` |
    | `CRON_SECRET` | any random string |
+   | `GOOGLE_CLIENT_ID` | only if you want sign-in — see above |
 
    Reusing `data/vapid.json` from the laptop keeps existing subscriptions valid;
    a fresh pair invalidates every device and they must re-subscribe.
@@ -137,12 +196,14 @@ lib/time.js        Europe/Athens anchoring for the naive timestamps
 lib/store.js       subscriptions + snapshots: Upstash Redis or a JSON file
 lib/push.js        web-push transport, VAPID keys, prune-on-410
 lib/cycle.js       poll -> diff -> per-device events -> push
+lib/auth.js        Google ID-token verification + cookie sessions
 lib/handlers.js    framework-free request handlers
 lib/vercel.js      Vercel adapter (kept out of api/, which holds only functions)
 server.js          Express adapter + the local scheduler
 api/*.js           one file per endpoint, each a 3-line wrapper
 public/            the PWA (index.html, app.js, styles.css, sw.js, icons)
 test/cycle.test.js end-to-end: real encryption + VAPID, stand-in push service
+test/auth.test.js  session integrity, token rejection, preference round trip
 ```
 
 Port is `4950` (`PORT` env var overrides).

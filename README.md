@@ -8,7 +8,7 @@ the app closed — when something is announced, moved, cancelled, or about to st
 Data comes from ΔΕΔΔΗΕ's public site: <https://siteapps.deddie.gr/outages2public>.
 
 ```
-start.bat            # installs deps if needed, opens http://localhost:4950
+start.bat            # installs deps, creates .env, opens http://localhost:4950
 npm start            # same thing without the browser
 npm test             # exercises the push cycle against the live site
 ```
@@ -103,13 +103,24 @@ id, the client hides the whole account section, and everything works as before.
    No redirect URI is needed: this uses the ID-token flow, not a redirect.
 5. Copy the **Client ID** (it ends in `.apps.googleusercontent.com`).
 
-**Configure the server**
+**Where the Client ID goes**
+
+Locally, in `.env` at the project root. `start.bat` creates it from
+`.env.example` on first run, and `npm start` loads it via Node's own
+`--env-file-if-exists`:
 
 ```
-GOOGLE_CLIENT_ID=<client id>     # locally: set it before `npm start`
+GOOGLE_CLIENT_ID=123456789-abcdef.apps.googleusercontent.com
 ```
 
-On Vercel add it as an environment variable and redeploy. There is **no client
+Restart the server after editing. `.env` is gitignored.
+
+On Vercel: Project → Settings → Environment Variables → add `GOOGLE_CLIENT_ID`
+for Production, then redeploy. Vercel does not read `.env`.
+
+The Client ID is **not** a secret — it's handed to the browser, and you'll see it
+in `/api/config`. Guarding it isn't what keeps other sites out; the *authorised
+origins* list and the server's audience check do that. There is **no client
 secret** anywhere — the browser gets a signed ID token, the server verifies it
 against Google's public keys (`lib/auth.js`) and mints its own HttpOnly session
 cookie. The audience check is what ties a token to this project; a token minted
@@ -202,6 +213,7 @@ lib/vercel.js      Vercel adapter (kept out of api/, which holds only functions)
 server.js          Express adapter + the local scheduler
 api/*.js           one file per endpoint, each a 3-line wrapper
 public/            the PWA (index.html, app.js, styles.css, sw.js, icons)
+.env.example       local configuration template; copied to .env on first run
 test/cycle.test.js end-to-end: real encryption + VAPID, stand-in push service
 test/auth.test.js  session integrity, token rejection, preference round trip
 ```

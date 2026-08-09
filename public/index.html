@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="el">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Διακοπές Ρεύματος — ΔΕΔΔΗΕ</title>
+<meta name="description" content="Προγραμματισμένες διακοπές ηλεκτροδότησης για τις περιοχές που παρακολουθείς.">
+<meta name="theme-color" content="#0b1220">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="wrap">
+
+  <header class="head">
+    <div class="head-main">
+      <div class="bolt" aria-hidden="true">⚡</div>
+      <div>
+        <h1>Διακοπές Ρεύματος</h1>
+        <p class="sub">Προγραμματισμένες διακοπές ηλεκτροδότησης · ΔΕΔΔΗΕ</p>
+      </div>
+    </div>
+    <button id="refresh" class="icon-btn" title="Ανανέωση" aria-label="Ανανέωση">⟳</button>
+  </header>
+
+  <p id="status" class="status" role="status"></p>
+
+  <section class="card">
+    <h2 class="card-title">Οι περιοχές μου</h2>
+    <div id="areas" class="chips"></div>
+
+    <div class="picker">
+      <label class="field">
+        <span>Νομός</span>
+        <select id="prefecture"><option value="">Φόρτωση…</option></select>
+      </label>
+      <label class="field">
+        <span>Δήμος / Κοινότητα <em>(προαιρετικό)</em></span>
+        <select id="municipality" disabled><option value="">Όλος ο νομός</option></select>
+      </label>
+      <button id="add" class="btn" disabled>Προσθήκη</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2 class="card-title">Φίλτρα &amp; ειδοποιήσεις</h2>
+    <div class="filters">
+      <label class="field grow">
+        <span>Αναζήτηση σε περιγραφή / δήμο / αιτία</span>
+        <input id="filter" type="search" placeholder="π.χ. Κατσικάς, Τσαμαδού, Συντήρηση" autocomplete="off">
+      </label>
+      <label class="check">
+        <input id="upcomingOnly" type="checkbox" checked>
+        <span>Μόνο επερχόμενες</span>
+      </label>
+      <label class="field">
+        <span>Ειδοποίηση πριν από</span>
+        <select id="lead">
+          <option value="1">1 ώρα</option>
+          <option value="3">3 ώρες</option>
+          <option value="12">12 ώρες</option>
+          <option value="24" selected>24 ώρες</option>
+          <option value="48">2 ημέρες</option>
+        </select>
+      </label>
+      <button id="notify" class="btn ghost">Ενεργοποίηση ειδοποιήσεων</button>
+    </div>
+    <p class="hint">Οι ειδοποιήσεις στέλνονται όσο η σελίδα είναι ανοιχτή (η εφαρμογή ελέγχει κάθε 10 λεπτά).</p>
+  </section>
+
+  <section id="results" class="results" aria-live="polite"></section>
+
+  <footer class="foot">
+    Πηγή δεδομένων: <a href="https://siteapps.deddie.gr/outages2public" target="_blank" rel="noopener">siteapps.deddie.gr/outages2public</a>.
+    Σε όλη τη διάρκεια της διακοπής οι αγωγοί θεωρούνται υπό τάση.
+  </footer>
+
+</div>
+<script src="app.js"></script>
+</body>
+</html>

@@ -5,7 +5,10 @@
  * The push handler is what makes notifications work with the app closed: the
  * server sends to the browser vendor's push service, which wakes this worker.
  */
-const CACHE = 'power-outages-v2';
+const CACHE = 'power-outages-v3';
+// The 17 launch images are deliberately absent: iOS requests only the one that
+// matches the device, and the runtime cache below picks it up on first launch.
+// Precaching all of them would cost ~460 KB on install to no benefit.
 const SHELL = [
   '.', 'index.html', 'styles.css', 'app.js',
   'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png'

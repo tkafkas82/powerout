@@ -17,6 +17,43 @@ Push works out of the box locally: on first start the server generates a VAPID
 key pair into `data/vapid.json` and keeps subscriptions in `data/store.json`.
 Neither is committed — `data/` is gitignored, and `vapid.json` holds a private key.
 
+## Installing it (PWA)
+
+Chrome/Android: the install prompt appears on its own; **⋮ → Add to Home screen**
+forces it. iOS/Safari: **Share → Add to Home Screen**. Installed, it runs
+full-screen with no browser chrome, and on iOS it's the only way notifications
+can work at all.
+
+Launch screens are the fiddly part. Android composes one from the manifest's
+`name`, `background_color` and 512px icon. **iOS ignores the manifest entirely** —
+it uses `<link rel="apple-touch-startup-image">` and only when the image matches
+the device's exact pixel dimensions, so a missing size means a blank white
+flash. Hence 17 pre-rendered portrait images in `public/splash/`.
+
+```
+npm run assets      # regenerates every icon and launch screen
+```
+
+`scripts/make-assets.js` rasterises them and hand-encodes the PNGs with zlib —
+no image library, no binary assets to trust. It also writes the matching
+`<link>` tags to `scripts/apple-startup-links.html` for pasting into
+`index.html`, because they're mechanical and easy to get subtly wrong.
+
+Two decisions in there worth keeping:
+
+- Every row uses PNG's **Up filter**, and the warm glow behind the mark varies
+  only vertically. The obvious radial halo costs eight times the bytes — 154 KB
+  against 19 KB on a 1290x2796 screen — because varying horizontally destroys
+  the row-to-row repetition the filter exploits. All 17 screens total ~460 KB.
+- The launch images are **not** precached by the service worker: iOS requests
+  only the one matching the device, so precaching all of them would spend
+  ~460 KB on install for nothing. The runtime cache picks up the one in use.
+
+In-app there's a matching splash overlay (`#splash`), held until the first
+results render so an installed app never flashes an empty list. It has a floor
+of 550ms, so a warm cache doesn't produce a flicker, and a 4s ceiling plus
+dismissal on fetch failure, so a dead network can't leave it covering the app.
+
 ## Why there is a server
 
 The DEDDIE site has **no JSON API** — it's an ASP.NET MVC page that returns

@@ -18,7 +18,7 @@ const LS = {
 
 const REFRESH_MS = 10 * 60 * 1000;
 const STALE_MS = 5 * 60 * 1000;
-const CACHE = 'power-outages-v2';   // must match sw.js
+const CACHE = 'power-outages-v3';   // must match sw.js, or push-settings.json lands in a cache the worker never reads
 
 const $ = id => document.getElementById(id);
 const el = { add:$('add'), areas:$('areas'), results:$('results'), status:$('status'),
@@ -332,6 +332,7 @@ async function refresh() {
   } finally {
     loading = false;
     el.refresh.classList.remove('spin');
+    dismissSplash();
   }
 }
 
@@ -415,6 +416,31 @@ function setStatus(text, isError = false) {
   el.status.textContent = text;
   el.status.classList.toggle('err', isError);
 }
+
+/* ---------------------------------------------------------------------------
+ * Launch splash
+ *
+ * Held until the first data is on screen, so an installed app never flashes an
+ * empty list between the platform splash and real content. Two guards: a floor,
+ * so a warm cache doesn't produce a 40ms flicker, and a ceiling, so a hung
+ * network can't leave the overlay covering the app forever.
+ * ------------------------------------------------------------------------- */
+const SPLASH_MIN_MS = 550;
+const SPLASH_MAX_MS = 4000;
+const splashEl = document.getElementById('splash');
+const bootedAt = Date.now();
+let splashDismissed = false;
+
+function dismissSplash() {
+  if (splashDismissed || !splashEl) return;
+  splashDismissed = true;
+  setTimeout(() => {
+    splashEl.classList.add('gone');
+    splashEl.addEventListener('transitionend', () => splashEl.remove(), { once: true });
+    setTimeout(() => splashEl.remove(), 900);   // in case the transition never fires
+  }, Math.max(0, SPLASH_MIN_MS - (Date.now() - bootedAt)));
+}
+setTimeout(dismissSplash, SPLASH_MAX_MS);
 
 /* ---------------------------------------------------------------------------
  * Web Push
@@ -697,7 +723,7 @@ renderAreas();
 render();
 loadPrefectures();
 initAuth();
-if (areas.length) refresh();
+if (areas.length) refresh(); else dismissSplash();
 
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('sw.js')

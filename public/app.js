@@ -105,13 +105,26 @@ function createCombo(inputId, listId, { onSelect, emptyLabel } = {}) {
   const input = $(inputId);
   const list = $(listId);
   const toggle = input.parentElement.querySelector('.combo-toggle');
+  const card = input.closest('.card');
   let items = [];
   let shown = [];
   let active = -1;
   let selected = null;
 
-  const open = () => { list.hidden = false; input.setAttribute('aria-expanded', 'true'); };
-  const close = () => { list.hidden = true; input.setAttribute('aria-expanded', 'false'); active = -1; };
+  // The card has to be lifted above its siblings while the list is open — see
+  // the .combo-open note in styles.css.
+  const open = () => {
+    list.hidden = false;
+    input.setAttribute('aria-expanded', 'true');
+    card?.classList.add('combo-open');
+  };
+  const close = () => {
+    list.hidden = true;
+    input.setAttribute('aria-expanded', 'false');
+    active = -1;
+    // Two combos share this card; only drop the lift once neither is open.
+    if (!card?.querySelector('.combo-list:not([hidden])')) card?.classList.remove('combo-open');
+  };
 
   function matches(query) {
     const words = norm(query).split(/\s+/).filter(Boolean);

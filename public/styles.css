@@ -51,7 +51,12 @@ h1{margin:0;font-size:20px;letter-spacing:.2px}
   background:var(--panel);border:1px solid var(--line);border-radius:var(--r);
   padding:14px;margin-bottom:14px;box-shadow:var(--shadow);
   backdrop-filter:blur(6px);
+  /* backdrop-filter makes every card its own stacking context, so a dropdown
+     inside one card can never paint over a later card on z-index alone — the
+     card itself has to be lifted while its list is open. */
+  position:relative;z-index:1;
 }
+.card.combo-open{z-index:60}
 .card-title{margin:0 0 10px;font-size:13px;text-transform:uppercase;letter-spacing:.9px;color:var(--muted);font-weight:600}
 
 /* ---------- area chips ---------- */

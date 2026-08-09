@@ -1,9 +1,11 @@
 /*
  * Power Outages — client.
  *
- * State lives in localStorage: the watched areas, the text filter, and which
- * outage ids we have already fired a notification for. Everything else is
- * derived from /api/outages on each refresh.
+ * Watched areas, filter text and the lead time live in localStorage. Alerts are
+ * real Web Push: the server keeps the subscription, polls DEDDIE on its own
+ * schedule and notifies the device whether or not this page is open. All this
+ * file does is register the subscription and keep the server's copy of
+ * (areas, leadHours) in sync.
  */
 
 const LS = {
@@ -11,20 +13,19 @@ const LS = {
   filter: 'po.filter',
   upcoming: 'po.upcomingOnly',
   lead: 'po.leadHours',
-  notify: 'po.notifyOn',
-  notified: 'po.notified'
+  push: 'po.pushOn'
 };
 
 const REFRESH_MS = 10 * 60 * 1000;
 const STALE_MS = 5 * 60 * 1000;
+const CACHE = 'power-outages-v2';   // must match sw.js
 
 const $ = id => document.getElementById(id);
-const el = { prefecture:$('prefecture'), municipality:$('municipality'), add:$('add'),
-             areas:$('areas'), results:$('results'), status:$('status'), refresh:$('refresh'),
-             filter:$('filter'), upcomingOnly:$('upcomingOnly'), lead:$('lead'), notify:$('notify') };
+const el = { add:$('add'), areas:$('areas'), results:$('results'), status:$('status'),
+             refresh:$('refresh'), filter:$('filter'), upcomingOnly:$('upcomingOnly'),
+             lead:$('lead'), notify:$('notify'), testPush:$('testPush'), pushHint:$('pushHint') };
 
 let areas = load(LS.areas, []);
-let notified = new Set(load(LS.notified, []));
 let outages = [];          // deduped, merged across areas
 let expanded = new Set();
 let lastFetch = 0;
@@ -35,6 +36,11 @@ function load(key, fallback) {
   catch { return fallback; }
 }
 const save = (key, value) => localStorage.setItem(key, JSON.stringify(value));
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
 
 // ---- dates -------------------------------------------------------------------
 // The API sends local-naive stamps ("2026-08-09T07:45:00"), which the Date
@@ -73,35 +79,161 @@ function state(o, now) {
   return { key: 'later', label: `σε ${Math.round(hours / 24)} ημ.` };
 }
 
-// ---- lookups -----------------------------------------------------------------
-async function api(path) {
-  const res = await fetch(path, { cache: 'no-store' });
-  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
-  return res.json();
+// ---- api ---------------------------------------------------------------------
+async function api(path, options) {
+  const res = await fetch(path, { cache: 'no-store', ...options });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) { const err = new Error(json.error || `HTTP ${res.status}`); err.status = res.status; throw err; }
+  return json;
 }
+
+const postJson = (path, body) => api(path, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body)
+});
+
+/* ---------------------------------------------------------------------------
+ * Combobox: a <select> can't be typed into, and some of these lists are long
+ * (60 prefectures, and municipalities per prefecture). Matching is
+ * accent- and case-insensitive, and every typed word has to appear somewhere in
+ * the name — so "ιωανν" and "δημ ιωανν" both find ΔΗΜΟΣ ΙΩΑΝΝΙΤΩΝ.
+ * ------------------------------------------------------------------------- */
+const norm = s => String(s).toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+function createCombo(inputId, listId, { onSelect, emptyLabel } = {}) {
+  const input = $(inputId);
+  const list = $(listId);
+  const toggle = input.parentElement.querySelector('.combo-toggle');
+  let items = [];
+  let shown = [];
+  let active = -1;
+  let selected = null;
+
+  const open = () => { list.hidden = false; input.setAttribute('aria-expanded', 'true'); };
+  const close = () => { list.hidden = true; input.setAttribute('aria-expanded', 'false'); active = -1; };
+
+  function matches(query) {
+    const words = norm(query).split(/\s+/).filter(Boolean);
+    if (!words.length) return items;
+    return items.filter(it => words.every(w => norm(it.name).includes(w)));
+  }
+
+  function draw() {
+    if (!shown.length) {
+      list.innerHTML = `<li class="combo-empty">${esc(emptyLabel || 'Καμία αντιστοιχία')}</li>`;
+      return;
+    }
+    const words = norm(input.value).split(/\s+/).filter(Boolean);
+    list.innerHTML = shown.map((it, i) => `
+      <li role="option" data-i="${i}" aria-selected="${i === active}"
+          class="${i === active ? 'active' : ''}${selected && selected.id === it.id ? ' chosen' : ''}">
+        ${highlight(it.name, words[0])}
+      </li>`).join('');
+    list.querySelector('.active')?.scrollIntoView({ block: 'nearest' });
+  }
+
+  function highlight(name, word) {
+    if (!word) return esc(name);
+    const at = norm(name).indexOf(word);
+    if (at < 0) return esc(name);
+    // norm() is 1:1 on length for these names (uppercasing + dropping combining
+    // marks), so offsets carry over to the original string.
+    return esc(name.slice(0, at)) + '<b>' + esc(name.slice(at, at + word.length)) + '</b>' +
+           esc(name.slice(at + word.length));
+  }
+
+  function filter() {
+    shown = matches(input.value);
+    active = shown.length ? 0 : -1;
+    draw();
+    open();
+  }
+
+  function choose(i) {
+    const it = shown[i];
+    if (!it) return;
+    selected = it;
+    input.value = it.name;
+    close();
+    onSelect?.(it);
+  }
+
+  input.addEventListener('input', () => {
+    // Typing past a previous pick means the pick is no longer what's in the box.
+    if (selected && input.value !== selected.name) { selected = null; onSelect?.(null); }
+    filter();
+  });
+  input.addEventListener('focus', () => { shown = matches(''); active = -1; draw(); open(); });
+  input.addEventListener('keydown', e => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (list.hidden) filter();
+      if (!shown.length) return;
+      active = e.key === 'ArrowDown'
+        ? (active + 1) % shown.length
+        : (active - 1 + shown.length) % shown.length;
+      draw();
+    } else if (e.key === 'Enter') {
+      if (!list.hidden && active >= 0) { e.preventDefault(); choose(active); }
+    } else if (e.key === 'Escape') {
+      close();
+    }
+  });
+  input.addEventListener('blur', () => {
+    // Let a click on the list win the race against blur.
+    setTimeout(() => {
+      close();
+      if (selected) input.value = selected.name;
+      else if (input.value) { input.value = ''; onSelect?.(null); }
+    }, 150);
+  });
+  list.addEventListener('mousedown', e => {
+    const li = e.target.closest('li[data-i]');
+    if (li) { e.preventDefault(); choose(Number(li.dataset.i)); }
+  });
+  toggle?.addEventListener('mousedown', e => {
+    e.preventDefault();
+    if (list.hidden) { input.focus(); shown = matches(''); draw(); open(); }
+    else close();
+  });
+
+  return {
+    setItems(next) { items = next; selected = null; input.value = ''; },
+    setEnabled(on) { input.disabled = !on; if (!on) { items = []; selected = null; input.value = ''; } },
+    setPlaceholder(text) { input.placeholder = text; },
+    get selected() { return selected; }
+  };
+}
+
+const municipalityCombo = createCombo('municipality', 'municipalityList', {
+  onSelect: () => {},
+  emptyLabel: 'Κανένας δήμος δεν ταιριάζει'
+});
+
+const prefectureCombo = createCombo('prefecture', 'prefectureList', {
+  emptyLabel: 'Κανένας νομός δεν ταιριάζει',
+  onSelect: async pref => {
+    el.add.disabled = !pref;
+    municipalityCombo.setEnabled(false);
+    if (!pref) return;
+    municipalityCombo.setPlaceholder('Φόρτωση…');
+    try {
+      const list = await api(`/api/municipalities?prefecture=${pref.id}`);
+      municipalityCombo.setItems(list);
+      municipalityCombo.setEnabled(true);
+      municipalityCombo.setPlaceholder('Όλος ο νομός — ή πληκτρολόγησε δήμο');
+    } catch {
+      municipalityCombo.setPlaceholder('Όλος ο νομός');
+    }
+  }
+});
 
 async function loadPrefectures() {
   try {
-    const list = await api('/api/prefectures');
-    el.prefecture.innerHTML = '<option value="">[Επιλέξτε Νομό]</option>' +
-      list.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
+    prefectureCombo.setItems(await api('/api/prefectures'));
   } catch (err) {
-    el.prefecture.innerHTML = '<option value="">Σφάλμα φόρτωσης</option>';
     setStatus(`Δεν φορτώθηκε η λίστα νομών: ${err.message}`, true);
-  }
-}
-
-async function loadMunicipalities(prefectureId) {
-  el.municipality.innerHTML = '<option value="">Φόρτωση…</option>';
-  el.municipality.disabled = true;
-  try {
-    const list = await api(`/api/municipalities?prefecture=${prefectureId}`);
-    el.municipality.innerHTML = '<option value="">Όλος ο νομός</option>' +
-      list.map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join('');
-    el.municipality.disabled = false;
-  } catch {
-    el.municipality.innerHTML = '<option value="">Όλος ο νομός</option>';
-    el.municipality.disabled = false;
   }
 }
 
@@ -116,19 +248,19 @@ function renderAreas() {
 }
 
 function addArea() {
-  const prefectureId = Number(el.prefecture.value);
-  if (!prefectureId) return;
-  const municipalityId = Number(el.municipality.value) || null;
-  const key = `${prefectureId}${municipalityId ? ':' + municipalityId : ''}`;
+  const pref = prefectureCombo.selected;
+  if (!pref) return;
+  const mun = municipalityCombo.selected;
+  const key = `${pref.id}${mun ? ':' + mun.id : ''}`;
   if (areas.some(a => a.key === key)) return;
 
   areas.push({
-    key, prefectureId, municipalityId,
-    prefectureName: el.prefecture.selectedOptions[0].textContent,
-    municipalityName: municipalityId ? el.municipality.selectedOptions[0].textContent : null
+    key, prefectureId: pref.id, municipalityId: mun ? mun.id : null,
+    prefectureName: pref.name, municipalityName: mun ? mun.name : null
   });
   save(LS.areas, areas);
   renderAreas();
+  syncPush();
   refresh();
 }
 
@@ -136,6 +268,7 @@ function removeArea(key) {
   areas = areas.filter(a => a.key !== key);
   save(LS.areas, areas);
   renderAreas();
+  syncPush();
   if (areas.length) refresh(); else { outages = []; render(); }
 }
 
@@ -172,7 +305,6 @@ async function refresh() {
       failed.length > 0
     );
     render();
-    maybeNotify();
   } catch (err) {
     setStatus(`Σφάλμα ανάκτησης: ${err.message}`, true);
   } finally {
@@ -182,11 +314,6 @@ async function refresh() {
 }
 
 // ---- render ------------------------------------------------------------------
-function esc(s) {
-  return String(s ?? '').replace(/[&<>"']/g, c =>
-    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-}
-
 function visible() {
   const now = new Date();
   const q = el.filter.value.trim().toLowerCase();
@@ -249,7 +376,7 @@ function card(o, now, multiArea) {
         ${o.municipalities.map(m => `<span class="tag mun">${esc(m)}</span>`).join('')}
         ${o.reason ? `<span class="tag reason">${esc(o.reason)}</span>` : ''}
       </div>
-      <p class="desc${open ? ' open' : ''}" id="d-${esc(o.id)}">${esc(o.description)}</p>
+      <p class="desc${open ? ' open' : ''}">${esc(o.description)}</p>
       ${longDesc ? `<button class="more" data-more="${esc(o.id)}">${open ? 'Λιγότερα' : 'Περισσότερα'}</button>` : ''}
       <div class="meta">
         ${o.note ? `<span>Σημείωμα ${esc(o.note)}</span>` : ''}
@@ -267,63 +394,145 @@ function setStatus(text, isError = false) {
   el.status.classList.toggle('err', isError);
 }
 
-// ---- notifications -----------------------------------------------------------
-function notifyState() {
-  const on = load(LS.notify, false) && 'Notification' in window && Notification.permission === 'granted';
+/* ---------------------------------------------------------------------------
+ * Web Push
+ *
+ * The server does the watching; this only registers the device and keeps the
+ * server's copy of (areas, leadHours) current. Nothing here fires a
+ * notification — that would stop the moment the tab closed, which is the whole
+ * thing we're avoiding.
+ * ------------------------------------------------------------------------- */
+const pushSupported = () =>
+  'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+
+function urlB64ToUint8Array(base64) {
+  const padded = (base64 + '='.repeat((4 - base64.length % 4) % 4)).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(padded);
+  return Uint8Array.from([...raw].map(c => c.charCodeAt(0)));
+}
+
+const pushSettings = () => ({ areas: areas.map(a => a.key), leadHours: Number(el.lead.value) || 24 });
+
+// The service worker can't read localStorage, but it needs these if the browser
+// swaps the subscription out from under us (pushsubscriptionchange).
+async function mirrorSettings() {
+  try {
+    const cache = await caches.open(CACHE);
+    await cache.put('push-settings.json', new Response(JSON.stringify(pushSettings()), {
+      headers: { 'Content-Type': 'application/json' }
+    }));
+  } catch { /* best effort */ }
+}
+
+async function currentSubscription() {
+  if (!pushSupported()) return null;
+  const reg = await navigator.serviceWorker.ready;
+  return reg.pushManager.getSubscription();
+}
+
+function setPushUi(on, hint) {
   el.notify.classList.toggle('on', on);
   el.notify.textContent = on ? '🔔 Ειδοποιήσεις ενεργές' : 'Ενεργοποίηση ειδοποιήσεων';
-  return on;
+  el.testPush.hidden = !on;
+  if (hint) el.pushHint.textContent = hint;
 }
 
-async function toggleNotifications() {
-  if (!('Notification' in window)) { setStatus('Ο browser δεν υποστηρίζει ειδοποιήσεις.', true); return; }
-  if (load(LS.notify, false) && Notification.permission === 'granted') {
-    save(LS.notify, false);
-  } else {
-    const perm = await Notification.requestPermission();
-    if (perm !== 'granted') { setStatus('Οι ειδοποιήσεις απορρίφθηκαν από τον browser.', true); notifyState(); return; }
-    save(LS.notify, true);
+async function enablePush() {
+  if (!pushSupported()) {
+    setPushUi(false, 'Ο browser δεν υποστηρίζει push ειδοποιήσεις.');
+    return;
   }
-  notifyState();
-  maybeNotify();
-}
+  if (!areas.length) {
+    setStatus('Πρόσθεσε πρώτα τουλάχιστον μία περιοχή.', true);
+    return;
+  }
+  try {
+    const { publicKey } = await api('/api/vapid-public-key');
 
-// Fire once per outage, when its start falls inside the chosen lead window.
-function maybeNotify() {
-  if (!notifyState()) return;
-  const leadMs = Number(el.lead.value) * 3600000;
-  const now = Date.now();
+    const permission = await Notification.requestPermission();
+    if (permission !== 'granted') {
+      setPushUi(false, 'Οι ειδοποιήσεις είναι μπλοκαρισμένες στις ρυθμίσεις του browser.');
+      return;
+    }
 
-  for (const o of outages) {
-    if (!o.fromDate || notified.has(o.id)) continue;
-    const delta = o.fromDate.getTime() - now;
-    if (delta > leadMs || (o.toDate && o.toDate.getTime() < now)) continue;
+    const reg = await navigator.serviceWorker.ready;
+    const subscription = await reg.pushManager.getSubscription() ||
+      await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlB64ToUint8Array(publicKey)
+      });
 
-    const where = o.areaLabels[0] || o.municipalities[0] || '';
-    const when = delta <= 0
-      ? 'σε εξέλιξη τώρα'
-      : `${o.fromDate.toLocaleString('el-GR', { weekday: 'short', hour: '2-digit', minute: '2-digit' })}–${hhmm(o.toDate || o.fromDate)}`;
-    new Notification(`⚡ Διακοπή ρεύματος — ${where}`, {
-      body: `${when}\n${o.description.slice(0, 160)}`,
-      tag: `outage-${o.id}`,
-      icon: 'icon-192.png'
+    const res = await postJson('/api/subscribe', {
+      subscription, ...pushSettings(), userAgent: navigator.userAgent
     });
-    notified.add(o.id);
+    save(LS.push, true);
+    await mirrorSettings();
+    setPushUi(true, `Ενεργές για ${res.areas.length} ${res.areas.length === 1 ? 'περιοχή' : 'περιοχές'} · υπενθύμιση ${res.leadHours}ω πριν. Φτάνουν και με την εφαρμογή κλειστή.`);
+  } catch (err) {
+    save(LS.push, false);
+    setPushUi(false, err.status === 503
+      ? 'Ο server δεν έχει ρυθμισμένα κλειδιά VAPID, οπότε δεν μπορεί να στείλει push.'
+      : `Αποτυχία ενεργοποίησης: ${err.message}`);
   }
+}
 
-  // Keep the "already told you" set from growing forever.
-  const live = new Set(outages.map(o => o.id));
-  notified = new Set([...notified].filter(id => live.has(id)));
-  save(LS.notified, [...notified]);
+async function disablePush() {
+  try {
+    const subscription = await currentSubscription();
+    if (subscription) {
+      await postJson('/api/unsubscribe', { endpoint: subscription.endpoint }).catch(() => {});
+      await subscription.unsubscribe().catch(() => {});
+    }
+  } finally {
+    save(LS.push, false);
+    setPushUi(false, 'Οι ειδοποιήσεις είναι απενεργοποιημένες.');
+  }
+}
+
+// Push settings that changed while the device is registered (areas added or
+// removed, different lead time) have to reach the server, or it keeps watching
+// the old set.
+async function syncPush() {
+  if (!load(LS.push, false) || !pushSupported()) return;
+  const subscription = await currentSubscription();
+  if (!subscription) return;
+  await mirrorSettings();
+  if (!areas.length) {
+    await postJson('/api/unsubscribe', { endpoint: subscription.endpoint }).catch(() => {});
+    return;
+  }
+  await postJson('/api/subscribe', { subscription, ...pushSettings(), userAgent: navigator.userAgent })
+    .catch(() => {});
+}
+
+async function restorePushState() {
+  if (!pushSupported()) { setPushUi(false, 'Ο browser δεν υποστηρίζει push ειδοποιήσεις.'); return; }
+  if (!load(LS.push, false)) return;
+  const subscription = await currentSubscription();
+  if (subscription && Notification.permission === 'granted') {
+    setPushUi(true);
+    syncPush();
+  } else {
+    save(LS.push, false);
+    setPushUi(false);
+  }
+}
+
+async function sendTestPush() {
+  const subscription = await currentSubscription();
+  if (!subscription) return;
+  el.testPush.disabled = true;
+  try {
+    await postJson('/api/test-push', { endpoint: subscription.endpoint });
+    setStatus('Στάλθηκε δοκιμαστική ειδοποίηση.');
+  } catch (err) {
+    setStatus(`Η δοκιμή απέτυχε: ${err.message}`, true);
+  } finally {
+    el.testPush.disabled = false;
+  }
 }
 
 // ---- wiring ------------------------------------------------------------------
-el.prefecture.addEventListener('change', () => {
-  const id = Number(el.prefecture.value);
-  el.add.disabled = !id;
-  if (id) loadMunicipalities(id);
-  else { el.municipality.innerHTML = '<option value="">Όλος ο νομός</option>'; el.municipality.disabled = true; }
-});
 el.add.addEventListener('click', addArea);
 el.areas.addEventListener('click', e => {
   const key = e.target.dataset.key;
@@ -338,8 +547,9 @@ el.results.addEventListener('click', e => {
 el.refresh.addEventListener('click', () => refresh());
 el.filter.addEventListener('input', () => { save(LS.filter, el.filter.value); render(); });
 el.upcomingOnly.addEventListener('change', () => { save(LS.upcoming, el.upcomingOnly.checked); render(); });
-el.lead.addEventListener('change', () => { save(LS.lead, el.lead.value); maybeNotify(); });
-el.notify.addEventListener('click', toggleNotifications);
+el.lead.addEventListener('change', () => { save(LS.lead, el.lead.value); syncPush(); });
+el.notify.addEventListener('click', () => (load(LS.push, false) ? disablePush() : enablePush()));
+el.testPush.addEventListener('click', sendTestPush);
 
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden && Date.now() - lastFetch > STALE_MS) refresh();
@@ -351,12 +561,13 @@ setInterval(render, 60000);   // keep "σε 2ω" / "ΣΕ ΕΞΕΛΙΞΗ" honest
 el.filter.value = load(LS.filter, '');
 el.upcomingOnly.checked = load(LS.upcoming, true);
 el.lead.value = load(LS.lead, '24');
-notifyState();
 renderAreas();
 render();
 loadPrefectures();
 if (areas.length) refresh();
 
 if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+  navigator.serviceWorker.register('sw.js')
+    .then(restorePushState)
+    .catch(() => setPushUi(false, 'Το service worker δεν καταχωρήθηκε — οι push ειδοποιήσεις απαιτούν HTTPS ή localhost.'));
 }

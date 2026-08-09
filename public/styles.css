@@ -73,9 +73,9 @@ h1{margin:0;font-size:20px;letter-spacing:.2px}
 .picker,.filters{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end}
 .field{display:flex;flex-direction:column;gap:5px;min-width:170px;flex:1}
 .field.grow{flex:2 1 240px}
-.field>span{font-size:11.5px;color:var(--muted);letter-spacing:.3px}
+.field>span,.field>label{font-size:11.5px;color:var(--muted);letter-spacing:.3px}
 .field em{color:var(--faint);font-style:normal}
-select,input[type=search]{
+select,input[type=search],input[type=text]{
   width:100%;padding:10px 11px;border-radius:11px;border:1px solid var(--line);
   background:rgba(0,0,0,.28);color:var(--txt);font-size:14px;font-family:inherit;
 }
@@ -88,6 +88,25 @@ option{background:#111a2e}
 .btn:disabled{opacity:.45;cursor:not-allowed}
 .btn.ghost{background:var(--panel-2);border:1px solid var(--line);color:var(--txt);font-weight:500}
 .btn.ghost.on{border-color:var(--ok);color:var(--ok)}
+/* ---------- combobox (typeahead over long Greek lists) ---------- */
+.combo{position:relative}
+.combo input{padding-right:34px}
+.combo input:disabled{opacity:.5;cursor:not-allowed}
+.combo-toggle{
+  position:absolute;right:2px;top:2px;bottom:2px;width:30px;
+  border:0;background:none;color:var(--muted);font-size:12px;cursor:pointer;
+}
+.combo-list{
+  position:absolute;z-index:20;left:0;right:0;top:calc(100% + 4px);
+  margin:0;padding:4px;list-style:none;max-height:264px;overflow-y:auto;
+  background:#111a2e;border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);
+}
+.combo-list li{padding:9px 10px;border-radius:8px;font-size:13.5px;cursor:pointer;line-height:1.3}
+.combo-list li b{color:var(--accent);font-weight:700}
+.combo-list li.active{background:var(--panel-2)}
+.combo-list li.chosen{color:var(--accent)}
+.combo-list .combo-empty{color:var(--faint);cursor:default;font-size:13px}
+
 .check{display:flex;align-items:center;gap:8px;font-size:13.5px;color:var(--muted);padding-bottom:10px}
 .check input{width:17px;height:17px;accent-color:var(--accent)}
 .hint{margin:10px 0 0;font-size:11.5px;color:var(--faint)}

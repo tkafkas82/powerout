@@ -2,3 +2,9 @@ node_modules/
 server.out
 server.err
 *.log
+
+# Local push state: VAPID private key and device subscriptions. Never commit.
+data/
+.env
+.env.local
+.vercel

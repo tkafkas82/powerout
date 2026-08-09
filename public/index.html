@@ -32,31 +32,49 @@
     <div id="areas" class="chips"></div>
 
     <div class="picker">
-      <label class="field">
-        <span>Νομός</span>
-        <select id="prefecture"><option value="">Φόρτωση…</option></select>
-      </label>
-      <label class="field">
-        <span>Δήμος / Κοινότητα <em>(προαιρετικό)</em></span>
-        <select id="municipality" disabled><option value="">Όλος ο νομός</option></select>
-      </label>
+      <div class="field">
+        <label for="prefecture">Νομός</label>
+        <div class="combo" id="prefectureCombo">
+          <input id="prefecture" type="text" role="combobox" aria-expanded="false"
+                 aria-autocomplete="list" aria-controls="prefectureList"
+                 placeholder="Πληκτρολόγησε ή διάλεξε…" autocomplete="off" spellcheck="false">
+          <button class="combo-toggle" type="button" tabindex="-1" aria-label="Άνοιγμα λίστας">▾</button>
+          <ul class="combo-list" id="prefectureList" role="listbox" hidden></ul>
+        </div>
+      </div>
+      <div class="field">
+        <label for="municipality">Δήμος / Κοινότητα <em>(προαιρετικό)</em></label>
+        <div class="combo" id="municipalityCombo">
+          <input id="municipality" type="text" role="combobox" aria-expanded="false"
+                 aria-autocomplete="list" aria-controls="municipalityList"
+                 placeholder="Όλος ο νομός" autocomplete="off" spellcheck="false" disabled>
+          <button class="combo-toggle" type="button" tabindex="-1" aria-label="Άνοιγμα λίστας">▾</button>
+          <ul class="combo-list" id="municipalityList" role="listbox" hidden></ul>
+        </div>
+      </div>
       <button id="add" class="btn" disabled>Προσθήκη</button>
     </div>
   </section>
 
   <section class="card">
-    <h2 class="card-title">Φίλτρα &amp; ειδοποιήσεις</h2>
+    <h2 class="card-title">Φίλτρα</h2>
     <div class="filters">
-      <label class="field grow">
-        <span>Αναζήτηση σε περιγραφή / δήμο / αιτία</span>
+      <div class="field grow">
+        <label for="filter">Αναζήτηση σε περιγραφή / δήμο / αιτία</label>
         <input id="filter" type="search" placeholder="π.χ. Κατσικάς, Τσαμαδού, Συντήρηση" autocomplete="off">
-      </label>
+      </div>
       <label class="check">
         <input id="upcomingOnly" type="checkbox" checked>
         <span>Μόνο επερχόμενες</span>
       </label>
-      <label class="field">
-        <span>Ειδοποίηση πριν από</span>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2 class="card-title">Ειδοποιήσεις</h2>
+    <div class="filters">
+      <div class="field">
+        <label for="lead">Υπενθύμιση πριν από</label>
         <select id="lead">
           <option value="1">1 ώρα</option>
           <option value="3">3 ώρες</option>
@@ -64,10 +82,14 @@
           <option value="24" selected>24 ώρες</option>
           <option value="48">2 ημέρες</option>
         </select>
-      </label>
+      </div>
       <button id="notify" class="btn ghost">Ενεργοποίηση ειδοποιήσεων</button>
+      <button id="testPush" class="btn ghost" hidden>Δοκιμή</button>
     </div>
-    <p class="hint">Οι ειδοποιήσεις στέλνονται όσο η σελίδα είναι ανοιχτή (η εφαρμογή ελέγχει κάθε 10 λεπτά).</p>
+    <p id="pushHint" class="hint">
+      Ειδοποιήσεις για νέες διακοπές, αλλαγές ώρας, ακυρώσεις και υπενθύμιση πριν την έναρξη —
+      φτάνουν και με την εφαρμογή κλειστή.
+    </p>
   </section>
 
   <section id="results" class="results" aria-live="polite"></section>

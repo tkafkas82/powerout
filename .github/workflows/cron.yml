@@ -1,0 +1,31 @@
+# Drives the push cycle on the Vercel deployment.
+#
+# Vercel's own cron is once-a-day on the free plan, which is useless for
+# lead-time reminders — so GitHub Actions does the poking instead.
+#
+# Repo secrets required:
+#   CRON_URL      https://<your-deployment>/api/cron
+#   CRON_SECRET   same value as the CRON_SECRET env var in Vercel
+name: outage-cycle
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'   # every 30 minutes (UTC); GitHub may delay busy runs
+  workflow_dispatch:          # lets you fire one by hand from the Actions tab
+
+jobs:
+  cycle:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Poll DEDDIE, diff, push
+        run: |
+          if [ -z "${{ secrets.CRON_URL }}" ]; then
+            echo "CRON_URL secret is not set — nothing to call."
+            exit 0
+          fi
+          code=$(curl -sS -o response.json -w '%{http_code}' -X POST "${{ secrets.CRON_URL }}" \
+            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}")
+          echo "HTTP $code"
+          cat response.json
+          echo
+          [ "$code" = "200" ]

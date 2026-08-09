@@ -1,327 +1,75 @@
 /*
- * Power Outages — thin proxy + static host over DEDDIE's public outages site.
+ * Local server: hosts the PWA, exposes the same API as the Vercel deployment,
+ * and runs the push cycle on a timer.
  *
- * Source: https://siteapps.deddie.gr/outages2public
- *   There is no JSON API. The site is a classic ASP.NET MVC page that renders
- *   server-side HTML partials over unobtrusive-ajax. Three shapes matter:
+ * All the logic lives in lib/ — this file only adapts it to Express and owns the
+ * scheduler, which is the one thing Vercel does differently (a GitHub Actions
+ * cron hits /api/cron there).
  *
- *     GET  /outages2public/                        -> full page, contains the
- *                                                     <select id="PrefectureID"> list
- *     POST /Outages2Public/?Length=4               -> form post with PrefectureID
- *                                                     (+ optional MunicipalityID); the
- *                                                     reply re-renders the form, so the
- *                                                     <select id="MunicipalityID"> list
- *                                                     for that prefecture comes back with it
- *     POST /Outages2Public/Home/OutagesPartial?page=N&municipalityID=&prefectureID=N
- *                                                  -> just the results table + pager
- *
- *   Quirks worth remembering:
- *     - Every POST must carry a Content-Length, even an empty body: the edge
- *       (Incapsula) answers 411 otherwise. We always send ''.
- *     - The pager is 8 rows/page; the last page number is only discoverable from
- *       the pager links in the page-1 response.
- *     - Dates render as Greek locale strings: "9/8/2026 7:45:00 πμ" (d/M/yyyy, πμ/μμ).
- *
- * The proxy exists to (a) turn that HTML into JSON, (b) dodge CORS (the site
- * sends no cross-origin headers), and (c) cache so we never hammer DEDDIE.
+ * Push from here reaches a device even with the tab closed: the notification
+ * travels through the browser vendor's push service, so only *this process*
+ * needs to stay running, not the page.
  */
+import express from 'express';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import * as h from './lib/handlers.js';
+import { HttpError } from './lib/handlers.js';
+import { backend } from './lib/store.js';
+import { getVapid } from './lib/push.js';
+import { runCycle } from './lib/cycle.js';
 
-const express = require('express');
-const path = require('path');
-
+const HERE = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 4950;
+const CYCLE_MINUTES = Number(process.env.CYCLE_MINUTES) || 20;
 
-const BASE = 'https://siteapps.deddie.gr';
-const PAGE_URL = `${BASE}/outages2public/`;
-const FORM_URL = `${BASE}/Outages2Public/?Length=4`;
-const PARTIAL_URL = `${BASE}/Outages2Public/Home/OutagesPartial`;
+app.use(express.json({ limit: '64kb' }));
 
-const MAX_PAGES = 40;        // hard stop; Attica peaks around 7
-const PAGE_CONCURRENCY = 4;
-
-const TTL_LOOKUP = 12 * 60 * 60 * 1000;  // prefectures / municipalities barely change
-const TTL_OUTAGES = 10 * 60 * 1000;
-
-const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
-           '(KHTML, like Gecko) Chrome/126.0 Safari/537.36';
-
-// ---- tiny cache --------------------------------------------------------------
-const cache = new Map();
-function cached(key, ttlMs, producer) {
-  const hit = cache.get(key);
-  if (hit && Date.now() - hit.at < ttlMs) return hit.promise;
-  const promise = Promise.resolve().then(producer).catch(err => {
-    cache.delete(key);   // never cache failures
-    throw err;
-  });
-  cache.set(key, { at: Date.now(), promise });
-  return promise;
-}
-
-// ---- HTTP --------------------------------------------------------------------
-async function get(url) {
-  const res = await fetch(url, {
-    headers: { 'User-Agent': UA, 'Accept': 'text/html', 'Accept-Language': 'el-GR,el;q=0.9' }
-  });
-  if (!res.ok) throw new Error(`DEDDIE GET ${res.status}`);
-  return res.text();
-}
-
-async function post(url, body = '') {
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'User-Agent': UA,
-      'Accept': 'text/html, */*; q=0.01',
-      'Accept-Language': 'el-GR,el;q=0.9',
-      'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-      'X-Requested-With': 'XMLHttpRequest',
-      'Referer': PAGE_URL,
-      'Content-Length': Buffer.byteLength(body)   // 411 without it, even when empty
-    },
-    body
-  });
-  if (!res.ok) throw new Error(`DEDDIE POST ${res.status}`);
-  return res.text();
-}
-
-// ---- HTML helpers ------------------------------------------------------------
-function decode(s) {
-  return String(s)
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&#(\d+);/g, (_, d) => String.fromCharCode(Number(d)))
-    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCharCode(parseInt(h, 16)))
-    .replace(/&quot;/g, '"')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&amp;/g, '&');
-}
-
-function stripTags(s) {
-  return decode(String(s).replace(/<[^>]*>/g, ''));
-}
-
-function parseOptions(html, selectId) {
-  const block = html.match(
-    new RegExp(`<select[^>]*id="${selectId}"[^>]*>([\\s\\S]*?)</select>`, 'i')
-  );
-  if (!block) return [];
-  const out = [];
-  const re = /<option[^>]*value="(\d+)"[^>]*>([\s\S]*?)<\/option>/gi;
-  let m;
-  while ((m = re.exec(block[1]))) {
-    const name = stripTags(m[2]).trim();
-    if (name) out.push({ id: Number(m[1]), name });
-  }
-  return out;
-}
-
-// "9/8/2026 7:45:00 πμ" -> "2026-08-09T07:45:00" (local-naive; the site publishes
-// Greek local time and the client renders in the same wall clock).
-function parseGreekDateTime(raw) {
-  const m = String(raw).trim().match(
-    /^(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([πμΠΜ]{2})?/
-  );
-  if (!m) return null;
-  const [, d, mo, y, hRaw, mi, se, ampm] = m;
-  let h = Number(hRaw);
-  if (ampm) {
-    const pm = ampm.toLowerCase() === 'μμ';
-    if (pm && h < 12) h += 12;
-    if (!pm && h === 12) h = 0;
-  }
-  const p2 = n => String(n).padStart(2, '0');
-  return `${y}-${p2(mo)}-${p2(d)}T${p2(h)}:${p2(mi)}:${p2(se || 0)}`;
-}
-
-function parseRows(html) {
-  const rows = [];
-  const rowRe = /<tr class="align-middle">([\s\S]*?)<\/tr>/gi;
-  let r;
-  while ((r = rowRe.exec(html))) {
-    const cells = [];
-    const cellRe = /<td[^>]*>([\s\S]*?)<\/td>/gi;
-    let c;
-    while ((c = cellRe.exec(r[1]))) cells.push(c[1]);
-    if (cells.length < 6) continue;
-
-    const fromRaw = stripTags(cells[0]).trim();
-    const toRaw = stripTags(cells[1]).trim();
-    const municipalities = cells[2]
-      .split(/<br\s*\/?>/i)
-      .map(s => stripTags(s).trim())
-      .filter(Boolean);
-    // Descriptions arrive with alignment padding ("Ζυγά      οδός:ΛΕΝΟΡΜΑΝ");
-    // collapse space runs but keep the line breaks, which separate streets.
-    const description = decode(
-      cells[3].replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]*>/g, '')
-    ).replace(/[ \t]{2,}/g, ' ').replace(/ +\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
-
-    rows.push({
-      from: parseGreekDateTime(fromRaw),
-      to: parseGreekDateTime(toRaw),
-      fromRaw,
-      toRaw,
-      municipalities,
-      description,
-      note: stripTags(cells[4]).trim(),
-      reason: stripTags(cells[5]).trim()
-    });
-  }
-  return rows;
-}
-
-function lastPageOf(html) {
-  let max = 1;
-  const re = /[?&]page=(\d+)/g;
-  let m;
-  while ((m = re.exec(html))) max = Math.max(max, Number(m[1]));
-  return Math.min(max, MAX_PAGES);
-}
-
-// A stable key so the client can dedupe across areas and remember what it has
-// already alerted on. The note number is often blank, so fold in the payload.
-function outageId(o) {
-  const basis = [o.from, o.to, o.note, o.municipalities.join('|'), o.description.slice(0, 120)].join('~');
-  let h = 5381;
-  for (let i = 0; i < basis.length; i++) h = ((h * 33) ^ basis.charCodeAt(i)) >>> 0;
-  return h.toString(36);
-}
-
-async function mapLimit(items, limit, fn) {
-  const out = new Array(items.length);
-  let i = 0;
-  await Promise.all(
-    Array.from({ length: Math.min(limit, items.length) }, async () => {
-      while (i < items.length) {
-        const idx = i++;
-        out[idx] = await fn(items[idx]);
-      }
-    })
-  );
-  return out;
-}
-
-// ---- data access -------------------------------------------------------------
-function getPrefectures() {
-  return cached('prefectures', TTL_LOOKUP, async () => {
-    const html = await get(PAGE_URL);
-    const list = parseOptions(html, 'PrefectureID');
-    if (!list.length) throw new Error('No prefectures parsed — DEDDIE markup may have changed');
-    return list.sort((a, b) => a.name.localeCompare(b.name, 'el'));
-  });
-}
-
-function getMunicipalities(prefectureId) {
-  return cached(`municipalities:${prefectureId}`, TTL_LOOKUP, async () => {
-    const html = await post(FORM_URL, `PrefectureID=${prefectureId}&MunicipalityID=`);
-    return parseOptions(html, 'MunicipalityID');
-  });
-}
-
-function getOutages(prefectureId, municipalityId) {
-  const mun = municipalityId || '';
-  return cached(`outages:${prefectureId}:${mun}`, TTL_OUTAGES, async () => {
-    const url = p =>
-      `${PARTIAL_URL}?page=${p}&municipalityID=${encodeURIComponent(mun)}&prefectureID=${encodeURIComponent(prefectureId)}`;
-
-    const first = await post(url(1));
-    const last = lastPageOf(first);
-    const rest = last > 1
-      ? await mapLimit(
-          Array.from({ length: last - 1 }, (_, i) => i + 2),
-          PAGE_CONCURRENCY,
-          p => post(url(p))
-        )
-      : [];
-
-    const seen = new Set();
-    const outages = [];
-    for (const html of [first, ...rest]) {
-      for (const row of parseRows(html)) {
-        const id = outageId(row);
-        if (seen.has(id)) continue;
-        seen.add(id);
-        outages.push({ id, ...row });
-      }
-    }
-    outages.sort((a, b) => String(a.from).localeCompare(String(b.from)));
-    return { outages, pages: last };
-  });
-}
-
-// "24" or "24:495" -> { prefectureId, municipalityId }
-function parseArea(spec) {
-  const [p, m] = String(spec).split(':');
-  const prefectureId = Number(p);
-  const municipalityId = m ? Number(m) : null;
-  if (!Number.isFinite(prefectureId) || prefectureId <= 0) return null;
-  return { prefectureId, municipalityId: Number.isFinite(municipalityId) ? municipalityId : null };
-}
-
-async function nameArea(area) {
-  const [prefs, muns] = await Promise.all([
-    getPrefectures().catch(() => []),
-    area.municipalityId ? getMunicipalities(area.prefectureId).catch(() => []) : Promise.resolve([])
-  ]);
-  return {
-    prefectureName: prefs.find(p => p.id === area.prefectureId)?.name || `#${area.prefectureId}`,
-    municipalityName: area.municipalityId
-      ? muns.find(m => m.id === area.municipalityId)?.name || `#${area.municipalityId}`
-      : null
-  };
-}
-
-// ---- API ---------------------------------------------------------------------
-app.get('/api/prefectures', async (req, res) => {
+// Adapt a lib/handlers function to Express.
+const route = handler => async (req, res) => {
   try {
-    res.json(await getPrefectures());
+    const { status, json } = await handler({ query: req.query, body: req.body, headers: req.headers });
+    res.set('Cache-Control', 'no-store').status(status).json(json);
   } catch (err) {
-    res.status(502).json({ error: err.message });
+    res.status(err instanceof HttpError ? err.status : 502).json({ error: err.message });
   }
-});
+};
 
-app.get('/api/municipalities', async (req, res) => {
-  const prefecture = Number(req.query.prefecture);
-  if (!Number.isFinite(prefecture) || prefecture <= 0) {
-    return res.status(400).json({ error: 'prefecture is required' });
-  }
-  try {
-    res.json(await getMunicipalities(prefecture));
-  } catch (err) {
-    res.status(502).json({ error: err.message });
-  }
-});
+app.get('/api/prefectures', route(h.prefectures));
+app.get('/api/municipalities', route(h.municipalities));
+app.get('/api/outages', route(h.outages));
+app.get('/api/vapid-public-key', route(h.vapidPublicKey));
+app.post('/api/subscribe', route(h.subscribe));
+app.post('/api/unsubscribe', route(h.unsubscribe));
+app.post('/api/test-push', route(h.testPush));
+app.post('/api/cron', route(h.cron));
+app.get('/api/cron', route(h.cron));     // convenient to poke from a browser locally
 
-/*
- * /api/outages?areas=24:495,10
- *   Each area is prefectureID, optionally :municipalityID. One slow/failed area
- *   never sinks the rest — it comes back with an `error` field instead.
- */
-app.get('/api/outages', async (req, res) => {
-  const specs = String(req.query.areas || '').split(',').map(s => s.trim()).filter(Boolean);
-  const areas = specs.map(parseArea).filter(Boolean);
-  if (!areas.length) return res.status(400).json({ error: 'areas is required, e.g. areas=24:495,10' });
+app.use(express.static(path.join(HERE, 'public'), { extensions: ['html'] }));
 
-  const results = await Promise.all(areas.map(async area => {
-    const names = await nameArea(area);
-    const key = `${area.prefectureId}${area.municipalityId ? ':' + area.municipalityId : ''}`;
-    try {
-      const { outages, pages } = await getOutages(area.prefectureId, area.municipalityId);
-      return { key, ...area, ...names, pages, outages };
-    } catch (err) {
-      return { key, ...area, ...names, error: err.message, outages: [] };
-    }
-  }));
-
-  res.set('Cache-Control', 'no-store');
-  res.json({ fetchedAt: new Date().toISOString(), areas: results });
-});
-
-// ---- static ------------------------------------------------------------------
-app.use(express.static(path.join(__dirname, 'public'), { extensions: ['html'] }));
-
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`Power Outages running on http://localhost:${PORT}`);
+  console.log(`Store: ${backend}`);
+
+  try {
+    const vapid = await getVapid();
+    console.log(`Push: ready (VAPID from ${vapid.source})`);
+  } catch (err) {
+    console.log(`Push: disabled — ${err.message}`);
+  }
+
+  // The scheduler is what makes push real: it keeps checking DEDDIE whether or
+  // not anyone has the page open. Kick off shortly after boot, then every
+  // CYCLE_MINUTES.
+  const tick = async () => {
+    try {
+      const result = await runCycle({ ttl: 0 });
+      if (result.events) console.log(`[cycle] ${new Date().toLocaleTimeString('el-GR')}`, result);
+    } catch (err) {
+      console.error('[cycle] failed:', err.message);
+    }
+  };
+  setTimeout(tick, 15000).unref?.();
+  setInterval(tick, CYCLE_MINUTES * 60000);
 });

@@ -11,9 +11,24 @@ name: outage-cycle
 on:
   schedule:
     - cron: '*/30 * * * *'   # every 30 minutes (UTC); GitHub may delay busy runs
+    - cron: '17 3 * * 1'     # weekly keepalive, see the job below
   workflow_dispatch:          # lets you fire one by hand from the Actions tab
 
 jobs:
+  # GitHub disables scheduled workflows after 60 days with no repo activity.
+  # Re-enabling this (already enabled) workflow through the API resets that
+  # timer, so a weekly call keeps the schedule alive with no commits needed.
+  keepalive:
+    if: github.event.schedule == '17 3 * * 1' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Reset the inactivity timer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/cron.yml/enable"
+
   cycle:
     runs-on: ubuntu-latest
     steps:
